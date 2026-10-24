@@ -38,7 +38,6 @@ def process_jira_creation(user_name, text, response_url, thread_ts, slack_msg_li
     """Фоновая функция создания задачи любого типа (Bug / Task / Art)"""
     summary_text = text if len(text) <= 80 else text[:77] + "..."
     
-    # Иконки и префиксы в зависимости от типа тикета
     icons = {
         "Bug": "🐛",
         "Task": "📌",
@@ -92,16 +91,28 @@ def process_jira_creation(user_name, text, response_url, thread_ts, slack_msg_li
 
         requests.post(response_url, json=slack_payload, headers=slack_headers, timeout=5)
 
-def parse_slack_request(request_form):
-    """Общая функция парсинга данных из Slack"""
+@app.route("/slack/create-bug", methods=["POST"])
+def handle_slack_interactivity():
+    """Единая точка входа для всех Message Shortcuts"""
     thread_ts = None
     response_url = None
     user_name = "Slack User"
     text = "Без текста"
     slack_msg_link = None
+    issue_type = "Bug"  # Значение по умолчанию
 
-    if "payload" in request_form:
-        payload_data = json.loads(request_form["payload"])
+    if "payload" in request.form:
+        payload_data = json.loads(request.form["payload"])
+        
+        # Определяем тип тикета по callback_id шотката
+        callback_id = payload_data.get("callback_id", "")
+        if callback_id == "create_task":
+            issue_type = "Task"
+        elif callback_id == "create_art":
+            issue_type = "Art"
+        elif callback_id == "create_bug":
+            issue_type = "Bug"
+
         user_name = payload_data.get("user", {}).get("username", "Slack User")
         message_data = payload_data.get("message", {})
         text = message_data.get("text", "Без текста")
@@ -119,37 +130,13 @@ def parse_slack_request(request_form):
             if message_data.get("thread_ts"):
                 slack_msg_link += f"?thread_ts={message_data.get('thread_ts')}"
 
-    return user_name, text, response_url, thread_ts, slack_msg_link
-
-# Маршрут 1: Создание Бага (🐛)
-@app.route("/slack/create-bug", methods=["POST"])
-def handle_slack_bug():
-    user_name, text, response_url, thread_ts, slack_msg_link = parse_slack_request(request.form)
+    # Запуск фоновой обработки
     threading.Thread(
         target=process_jira_creation, 
-        args=(user_name, text, response_url, thread_ts, slack_msg_link, "Bug")
+        args=(user_name, text, response_url, thread_ts, slack_msg_link, issue_type)
     ).start()
-    return jsonify({"response_type": "ephemeral", "text": "⏳ Создаю баг в Jira..."})
 
-# Маршрут 2: Создание Таски (📌)
-@app.route("/slack/create-task", methods=["POST"])
-def handle_slack_task():
-    user_name, text, response_url, thread_ts, slack_msg_link = parse_slack_request(request.form)
-    threading.Thread(
-        target=process_jira_creation, 
-        args=(user_name, text, response_url, thread_ts, slack_msg_link, "Task")
-    ).start()
-    return jsonify({"response_type": "ephemeral", "text": "⏳ Создаю задачу в Jira..."})
-
-# Маршрут 3: Создание Арт-таски (🎨)
-@app.route("/slack/create-art", methods=["POST"])
-def handle_slack_art():
-    user_name, text, response_url, thread_ts, slack_msg_link = parse_slack_request(request.form)
-    threading.Thread(
-        target=process_jira_creation, 
-        args=(user_name, text, response_url, thread_ts, slack_msg_link, "Art")
-    ).start()
-    return jsonify({"response_type": "ephemeral", "text": "⏳ Создаю Art-тикет в Jira..."})
+    return jsonify({"response_type": "ephemeral", "text": f"⏳ Создаю {issue_type} в Jira..."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
