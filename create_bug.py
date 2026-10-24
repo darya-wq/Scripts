@@ -1,5 +1,42 @@
+import os
+import json
+import requests
+import threading
+from flask import Flask, request, jsonify
+from requests.auth import HTTPBasicAuth
+
+# Обязательная инициализация Flask-приложения для Gunicorn
+app = Flask(__name__)
+
+JIRA_URL = os.getenv("JIRA_URL")
+JIRA_EMAIL = os.getenv("JIRA_EMAIL")
+JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY")
+BOARD_ID = os.getenv("JIRA_BOARD_ID", "1")
+
+auth = HTTPBasicAuth(JIRA_EMAIL, JIRA_API_TOKEN) if JIRA_EMAIL and JIRA_API_TOKEN else None
+headers = {
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+}
+
+def get_active_sprint_id():
+    """Запрашивает ID активного спринта из Jira"""
+    if not JIRA_URL or not auth:
+        return None
+    url = f"{JIRA_URL.rstrip('/')}/rest/agile/1.0/board/{BOARD_ID}/sprint?state=active"
+    try:
+        res = requests.get(url, headers=headers, auth=auth, timeout=5)
+        if res.status_code == 200:
+            sprints = res.json().get("values", [])
+            if sprints:
+                return sprints[0]["id"]
+    except Exception as e:
+        print(f"[ERROR] Ошибка получения спринта: {e}")
+    return None
+
 def process_jira_creation(user_name, text, response_url):
-    """Фоновая функция создания тикета и ответа в Slack"""
+    """Фоновая функция создания тикета и отправки ответа в Slack"""
     summary_text = text if len(text) <= 80 else text[:77] + "..."
     summary = f"[Slack Bug] {summary_text}"
     description = f"**Автор:** @{user_name}\n\n**Описание из треда:**\n{text}"
@@ -31,12 +68,34 @@ def process_jira_creation(user_name, text, response_url):
     except Exception as e:
         msg = f"❌ Ошибка сервера: {str(e)}"
 
-    # Отправляем ответ обратно в Slack через response_url с правильными заголовками
+    # Отправка фидбека в тред Slack
     if response_url:
         slack_headers = {"Content-Type": "application/json"}
         slack_payload = {
             "text": msg,
-            "response_type": "in_channel"  # Видно всем в канале/треде
+            "response_type": "in_channel"
         }
         res = requests.post(response_url, json=slack_payload, headers=slack_headers, timeout=5)
         print(f"[DEBUG] Ответ Slack на response_url Code: {res.status_code}, Body: {res.text}")
+
+@app.route("/slack/create-bug", methods=["POST"])
+def handle_slack_shortcut():
+    if "payload" in request.form:
+        payload_data = json.loads(request.form["payload"])
+        user_name = payload_data.get("user", {}).get("username", "Slack User")
+        message_data = payload_data.get("message", {})
+        text = message_data.get("text", "Без текста")
+        response_url = payload_data.get("response_url")
+    else:
+        user_name = request.form.get("user_name", "Slack User")
+        text = request.form.get("text", "Без текста")
+        response_url = request.form.get("response_url")
+
+    # Асинхронный запуск
+    threading.Thread(target=process_jira_creation, args=(user_name, text, response_url)).start()
+
+    # Мгновенный ответ Slack, исключающий 3-секундный таймаут
+    return jsonify({"response_type": "ephemeral", "text": "⏳ Создаю баг в Jira..."})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
