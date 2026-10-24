@@ -6,7 +6,7 @@ from requests.auth import HTTPBasicAuth
 
 app = Flask(__name__)
 
-# Считываем переменные окружения
+# Чтение данных из переменных окружения
 JIRA_URL = os.getenv("JIRA_URL")
 JIRA_EMAIL = os.getenv("JIRA_EMAIL")
 JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
@@ -20,87 +20,7 @@ headers = {
 }
 
 def get_active_sprint_id():
-    """Получает ID активного спринта из Jira"""
-    if not JIRA_URL or not auth:
-        return None
-    url = f"{JIRA_URL.rstrip('/')}/rest/agile/1.0/board/{BOARD_ID}/sprint?state=active"
-    try:
-        res = requests.get(url, headers=headers, auth=auth, timeout=5)
-        if res.status_code == 200:
-            sprints = res.json().get("values", [])
-            if sprints:
-                return sprints[0]["id"]
-    except Exception as e:
-        print(f"Ошибка получения спринта: {e}")
-    return None
-
-@app.route("/slack/create-bug", methods=["POST"])
-def handle_slack_request():
-    # Проверяем, пришел ли запрос от Shortcut (Message Action) или Slash Command
-    if "payload" in request.form:
-        payload_data = json.loads(request.form["payload"])
-        user_name = payload_data.get("user", {}).get("username", "Slack User")
-        message_data = payload_data.get("message", {})
-        text = message_data.get("text", "Без текста")
-    else:
-        user_name = request.form.get("user_name", "Slack User")
-        text = request.form.get("text", "Без текста")
-
-    if not text:
-        return jsonify({
-            "response_type": "ephemeral",
-            "text": "⚠️ Сообщение пустое."
-        })
-
-    # Формируем заголовок задачи
-    summary_text = text if len(text) <= 80 else text[:77] + "..."
-    summary = f"[Slack Bug] {summary_text}"
-    description = f"**Автор:** @{user_name}\n\n**Описание из Slack:**\n{text}"
-
-    # Данные для создания задачи в Jira
-    jira_payload = {
-        "fields": {
-            "project": {"key": PROJECT_KEY},
-            "summary": summary,
-            "description": description,
-            "issuetype": {"name": "Bug"}
-        }
-    }
-
-    # Подтягиваем активный спринт
-    sprint_id = get_active_sprint_id()
-    if sprint_id:
-        jira_payload["fields"]["customfield_10020"] = sprint_id
-
-    jira_api_url = f"{JIRA_URL.rstrip('/')}/rest/api/2/issue"
-    try:
-        response = requests.post(jira_api_url, json=jira_payload, headers=headers, auth=auth, timeout=10)
-        
-        if response.status_code in [200, 2В код файла **`create_bug.py`** случайно попал разметный текст объяснения на русском языке (`JIRA_Дело в том, что...`), из-за чего Python выдает синтаксическую ошибку (**SyntaxError**).
-
-Замените весь код в файле **`create_bug.py`** на GitHub на этот чистый и рабочий вариант:
-
-```python
-import os
-import json
-import requests
-from flask import Flask, request, jsonify
-from requests.auth import HTTPBasicAuth
-
-app = Flask(__name__)
-
-# Чтение данных из переменных окружения
-JIRA_URL = os.getenv("JIRA_URL")
-JIRA_EMAIL = os.getenv("JIRA_EMAIL")
-JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
-PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY")
-BOARD_ID = os.getenv("JIRA_BOARD_ID", "1")
-
-auth = HTTPBasicAuth(JIRA_EMAIL, JIRA_API_TOKEN) if JIRA_EMAIL and JIRA_API_TOKEN else None
-headers = {"Accept": "application/json", "Content-Type": "application/json"}
-
-def get_active_sprint_id():
-    """Получает ID текущего активного спринта"""
+    """Запрашивает ID активного спринта из Jira"""
     if not JIRA_URL or not auth:
         return None
     url = f"{JIRA_URL.rstrip('/')}/rest/agile/1.0/board/{BOARD_ID}/sprint?state=active"
@@ -116,22 +36,19 @@ def get_active_sprint_id():
 
 @app.route("/slack/create-bug", methods=["POST"])
 def handle_slack_shortcut():
-    # Проверяем, пришли ли данные от Message Shortcut (payload)
+    # Извлечение данных из запроса Slack
     if "payload" in request.form:
         payload_data = json.loads(request.form["payload"])
-        
         user_name = payload_data.get("user", {}).get("username", "Slack User")
         message_data = payload_data.get("message", {})
         text = message_data.get("text", "Без текста")
     else:
-        # Резервный формат
         user_name = request.form.get("user_name", "Slack User")
         text = request.form.get("text", "Без текста")
 
-    # Краткий заголовок задачи
+    # Формирование описания и темы
     summary_text = text if len(text) <= 80 else text[:77] + "..."
     summary = f"[Slack Bug] {summary_text}"
-    
     description = f"**Автор:** @{user_name}\n\n**Описание из треда:**\n{text}"
 
     jira_payload = {
@@ -143,12 +60,12 @@ def handle_slack_shortcut():
         }
     }
 
-    # Подвязываем к активному спринту, если нашли его
+    # Попытка привязать к активному спринту
     sprint_id = get_active_sprint_id()
     if sprint_id:
         jira_payload["fields"]["customfield_10020"] = sprint_id
 
-    # Запрос к Jira API
+    # Отправка запроса в Jira API
     jira_api_url = f"{JIRA_URL.rstrip('/')}/rest/api/2/issue"
     try:
         response = requests.post(jira_api_url, json=jira_payload, headers=headers, auth=auth, timeout=10)
