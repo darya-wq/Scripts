@@ -36,7 +36,19 @@ def get_active_sprint_id():
 
 def process_jira_creation(user_name, text, response_url, thread_ts, slack_msg_link, issue_type="Bug"):
     """Фоновая функция создания задачи любого типа (Bug / Task / Art)"""
-    summary_text = text if len(text) <= 80 else text[:77] + "..."
+    
+    # 1. Берём только первую строку сообщения (до переноса строки)
+    first_line = text.split("\n")[0].strip()
+    
+    # 2. Если первая строка больше 150 символов, обрезаем и добавляем троеточие
+    if len(first_line) > 150:
+        summary_text = first_line[:147] + "..."
+    else:
+        summary_text = first_line
+
+    # На случай если первой строкой был только перенос строки
+    if not summary_text:
+        summary_text = "Новая задача из Slack"
     
     icons = {
         "Bug": "🐛",
@@ -93,18 +105,17 @@ def process_jira_creation(user_name, text, response_url, thread_ts, slack_msg_li
 
 @app.route("/slack/create-bug", methods=["POST"])
 def handle_slack_interactivity():
-    """Единая точка входа для всех Message Shortcuts"""
+    """Единый эндпоинт для обработки всех типов тикетов (Bug/Task/Art)"""
     thread_ts = None
     response_url = None
     user_name = "Slack User"
     text = "Без текста"
     slack_msg_link = None
-    issue_type = "Bug"  # Значение по умолчанию
+    issue_type = "Bug"
 
     if "payload" in request.form:
         payload_data = json.loads(request.form["payload"])
         
-        # Определяем тип тикета по callback_id шотката
         callback_id = payload_data.get("callback_id", "")
         if callback_id == "create_task":
             issue_type = "Task"
@@ -130,7 +141,6 @@ def handle_slack_interactivity():
             if message_data.get("thread_ts"):
                 slack_msg_link += f"?thread_ts={message_data.get('thread_ts')}"
 
-    # Запуск фоновой обработки
     threading.Thread(
         target=process_jira_creation, 
         args=(user_name, text, response_url, thread_ts, slack_msg_link, issue_type)
