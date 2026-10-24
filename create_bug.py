@@ -34,12 +34,19 @@ def get_active_sprint_id():
         print(f"[ERROR] Ошибка получения спринта: {e}")
     return None
 
-def process_jira_creation(user_name, text, response_url, thread_ts, slack_msg_link):
-    """Фоновая функция создания тикета и отправки ответа в тред Slack"""
+def process_jira_creation(user_name, text, response_url, thread_ts, slack_msg_link, issue_type="Bug"):
+    """Фоновая функция создания задачи любого типа (Bug / Task / Art)"""
     summary_text = text if len(text) <= 80 else text[:77] + "..."
-    summary = f"[Slack Bug] {summary_text}"
     
-    # Формируем описание с прямой ссылкой на сообщение в Slack
+    # Иконки и префиксы в зависимости от типа тикета
+    icons = {
+        "Bug": "🐛",
+        "Task": "📌",
+        "Art": "🎨"
+    }
+    icon = icons.get(issue_type, "📋")
+    summary = f"[Slack {issue_type}] {summary_text}"
+    
     description = f"**Автор:** @{user_name}\n"
     if slack_msg_link:
         description += f"**Ссылка на Slack:** {slack_msg_link}\n\n"
@@ -52,7 +59,7 @@ def process_jira_creation(user_name, text, response_url, thread_ts, slack_msg_li
             "project": {"key": PROJECT_KEY},
             "summary": summary,
             "description": description,
-            "issuetype": {"name": "Bug"}
+            "issuetype": {"name": issue_type}
         }
     }
 
@@ -63,18 +70,17 @@ def process_jira_creation(user_name, text, response_url, thread_ts, slack_msg_li
     jira_api_url = f"{JIRA_URL.rstrip('/')}/rest/api/2/issue"
     try:
         response = requests.post(jira_api_url, json=jira_payload, headers=headers, auth=auth, timeout=10)
-        print(f"[DEBUG] Ответ от Jira Status Code: {response.status_code}")
+        print(f"[DEBUG] [{issue_type}] Ответ от Jira Status Code: {response.status_code}")
 
         if response.status_code in [200, 201]:
             issue_key = response.json().get("key")
             issue_url = f"{JIRA_URL.rstrip('/')}/browse/{issue_key}"
-            msg = f"✅ Баг создан в Jira: <{issue_url}|{issue_key}>"
+            msg = f"{icon} {issue_type} создан в Jira: <{issue_url}|{issue_key}>"
         else:
             msg = f"❌ Ошибка создания в Jira ({response.status_code}): {response.text}"
     except Exception as e:
         msg = f"❌ Ошибка сервера: {str(e)}"
 
-    # Отправляем ответ в Slack
     if response_url:
         slack_headers = {"Content-Type": "application/json"}
         slack_payload = {
@@ -84,29 +90,26 @@ def process_jira_creation(user_name, text, response_url, thread_ts, slack_msg_li
         if thread_ts:
             slack_payload["thread_ts"] = thread_ts
 
-        res = requests.post(response_url, json=slack_payload, headers=slack_headers, timeout=5)
-        print(f"[DEBUG] Ответ Slack на response_url Code: {res.status_code}")
+        requests.post(response_url, json=slack_payload, headers=slack_headers, timeout=5)
 
-@app.route("/slack/create-bug", methods=["POST"])
-def handle_slack_shortcut():
+def parse_slack_request(request_form):
+    """Общая функция парсинга данных из Slack"""
     thread_ts = None
     response_url = None
     user_name = "Slack User"
     text = "Без текста"
     slack_msg_link = None
 
-    if "payload" in request.form:
-        payload_data = json.loads(request.form["payload"])
+    if "payload" in request_form:
+        payload_data = json.loads(request_form["payload"])
         user_name = payload_data.get("user", {}).get("username", "Slack User")
         message_data = payload_data.get("message", {})
         text = message_data.get("text", "Без текста")
         response_url = payload_data.get("response_url")
         
-        # Определяем timestamp для ответа в тред
         ts = message_data.get("ts")
         thread_ts = message_data.get("thread_ts") or ts
 
-        # Формируем прямую ссылку на сообщение в Slack
         team_domain = payload_data.get("team", {}).get("domain")
         channel_id = payload_data.get("channel", {}).get("id")
         
@@ -116,14 +119,37 @@ def handle_slack_shortcut():
             if message_data.get("thread_ts"):
                 slack_msg_link += f"?thread_ts={message_data.get('thread_ts')}"
 
-    # Запуск фонового процесса
+    return user_name, text, response_url, thread_ts, slack_msg_link
+
+# Маршрут 1: Создание Бага (🐛)
+@app.route("/slack/create-bug", methods=["POST"])
+def handle_slack_bug():
+    user_name, text, response_url, thread_ts, slack_msg_link = parse_slack_request(request.form)
     threading.Thread(
         target=process_jira_creation, 
-        args=(user_name, text, response_url, thread_ts, slack_msg_link)
+        args=(user_name, text, response_url, thread_ts, slack_msg_link, "Bug")
     ).start()
-
-    # Мгновенный ответ Slack
     return jsonify({"response_type": "ephemeral", "text": "⏳ Создаю баг в Jira..."})
+
+# Маршрут 2: Создание Таски (📌)
+@app.route("/slack/create-task", methods=["POST"])
+def handle_slack_task():
+    user_name, text, response_url, thread_ts, slack_msg_link = parse_slack_request(request.form)
+    threading.Thread(
+        target=process_jira_creation, 
+        args=(user_name, text, response_url, thread_ts, slack_msg_link, "Task")
+    ).start()
+    return jsonify({"response_type": "ephemeral", "text": "⏳ Создаю задачу в Jira..."})
+
+# Маршрут 3: Создание Арт-таски (🎨)
+@app.route("/slack/create-art", methods=["POST"])
+def handle_slack_art():
+    user_name, text, response_url, thread_ts, slack_msg_link = parse_slack_request(request.form)
+    threading.Thread(
+        target=process_jira_creation, 
+        args=(user_name, text, response_url, thread_ts, slack_msg_link, "Art")
+    ).start()
+    return jsonify({"response_type": "ephemeral", "text": "⏳ Создаю Art-тикет в Jira..."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
