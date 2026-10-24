@@ -34,11 +34,18 @@ def get_active_sprint_id():
         print(f"[ERROR] Ошибка получения спринта: {e}")
     return None
 
-def process_jira_creation(user_name, text, response_url, thread_ts):
+def process_jira_creation(user_name, text, response_url, thread_ts, slack_msg_link):
     """Фоновая функция создания тикета и отправки ответа в тред Slack"""
     summary_text = text if len(text) <= 80 else text[:77] + "..."
     summary = f"[Slack Bug] {summary_text}"
-    description = f"**Автор:** @{user_name}\n\n**Описание из треда:**\n{text}"
+    
+    # Формируем описание с прямой ссылкой на сообщение в Slack
+    description = f"**Автор:** @{user_name}\n"
+    if slack_msg_link:
+        description += f"**Ссылка на Slack:** {slack_msg_link}\n\n"
+    else:
+        description += "\n"
+    description += f"**Описание из треда:**\n{text}"
 
     jira_payload = {
         "fields": {
@@ -74,7 +81,6 @@ def process_jira_creation(user_name, text, response_url, thread_ts):
             "text": msg,
             "response_type": "in_channel"
         }
-        # Если есть thread_ts, направляем ответ именно в тред этого сообщения
         if thread_ts:
             slack_payload["thread_ts"] = thread_ts
 
@@ -87,6 +93,7 @@ def handle_slack_shortcut():
     response_url = None
     user_name = "Slack User"
     text = "Без текста"
+    slack_msg_link = None
 
     if "payload" in request.form:
         payload_data = json.loads(request.form["payload"])
@@ -95,14 +102,24 @@ def handle_slack_shortcut():
         text = message_data.get("text", "Без текста")
         response_url = payload_data.get("response_url")
         
-        # Определение родительского треда:
-        # Если тред уже существует, берем thread_ts. Если нет, берем timestamp самого сообщения (ts)
-        thread_ts = message_data.get("thread_ts") or message_data.get("ts")
+        # Определяем timestamp для ответа в тред
+        ts = message_data.get("ts")
+        thread_ts = message_data.get("thread_ts") or ts
 
-    # Фоновая обработка
+        # Формируем прямую ссылку на сообщение в Slack
+        team_domain = payload_data.get("team", {}).get("domain")
+        channel_id = payload_data.get("channel", {}).get("id")
+        
+        if team_domain and channel_id and ts:
+            clean_ts = ts.replace(".", "")
+            slack_msg_link = f"https://{team_domain}.slack.com/archives/{channel_id}/p{clean_ts}"
+            if message_data.get("thread_ts"):
+                slack_msg_link += f"?thread_ts={message_data.get('thread_ts')}"
+
+    # Запуск фонового процесса
     threading.Thread(
         target=process_jira_creation, 
-        args=(user_name, text, response_url, thread_ts)
+        args=(user_name, text, response_url, thread_ts, slack_msg_link)
     ).start()
 
     # Мгновенный ответ Slack
